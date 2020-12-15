@@ -91,7 +91,7 @@ export function intValue2hex(val: number | bigint):  string{
 export enum VariableType {
   BOOL = 'bool',
   INT = 'int',
-  BYTES = 'bytes',
+  BYTES = 'byte[]',
   PUBKEY = 'PubKey',
   PRIVKEY = 'PrivKey',
   SIG = 'Sig',
@@ -265,7 +265,7 @@ export function bytes2Literal(bytearray: number[], type: string): string {
     case 'int':
       return BN.fromSM(bytearray, { endian: 'little' }).toString();
 
-    case 'bytes':
+    case 'byte[]':
       return `b'${bytesToHexString(bytearray)}'`;
 
     default:
