@@ -1,18 +1,22 @@
 import { ABICoder, FunctionCall, Script} from "./abi";
 import { serializeState, State } from "./serializer";
-import { bsv, DEFAULT_FLAGS } from "./utils";
+import { bsv, DEFAULT_FLAGS, readFileByLine } from "./utils";
 import { SupportedParamType} from './scryptTypes';
-import { StructEntity, ABIEntity} from "./compilerWrapper";
-
+import { StructEntity, ABIEntity, DebugModeAsmWord, CompileResult} from "./compilerWrapper";
+import { basename } from 'path';
 export interface TxContext {
   tx?: any;
   inputIndex?: number;
   inputSatoshis?: number;
 }
 
+
+export type VerifyError = string;
+
+
 export interface VerifyResult {
   success: boolean;
-  error: string; 
+  error?: VerifyError; 
 }
 
 export interface ContractDescription {
@@ -32,6 +36,7 @@ export class AbstractContract {
   public static abi: ABIEntity[];
   public static asm: string;
   public static abiCoder: ABICoder;
+  public static debugAsm?: DebugModeAsmWord[];
 
   scriptedConstructor: FunctionCall;
 
@@ -58,6 +63,14 @@ export class AbstractContract {
     this.scriptedConstructor.init(asmVarValues);
   }
 
+  static findMappableAsmWord(debugAsm: DebugModeAsmWord[], pc: number): DebugModeAsmWord | undefined {
+    while(--pc > 0) {
+      if(debugAsm[pc].file && debugAsm[pc].line > 0) {
+        return debugAsm[pc];
+      }
+    }
+  }
+
   run_verify(unlockingScriptASM: string, txContext?: TxContext): VerifyResult {
     const txCtx: TxContext = Object.assign({}, this._txContext || {}, txContext || {});
 
@@ -67,12 +80,41 @@ export class AbstractContract {
     const inputIndex = txCtx.inputIndex || 0;
     const inputSatoshis = txCtx.inputSatoshis || 0;
 
-    const si = bsv.Script.Interpreter();
-    const result = si.verify(us, ls, tx, inputIndex, DEFAULT_FLAGS, new bsv.crypto.BN(inputSatoshis));
+    const bsi = bsv.Script.Interpreter();
+	
+		bsi.stepListener = function (step: any, stack: any[], altstack: any[]) {
+
+    };
+
+    
+    const debugAsm: DebugModeAsmWord[] =  Object.getPrototypeOf(this).constructor.debugAsm;
+    const contractName: string =  Object.getPrototypeOf(this).constructor.contractName;
+
+    const result = bsi.verify(us, ls, tx, inputIndex, DEFAULT_FLAGS, new bsv.crypto.BN(inputSatoshis));
+
+    let error = bsi.errstr;
+
+    if(!result && debugAsm && debugAsm[bsi.pc - 1]) {
+
+      const asmWord = debugAsm[bsi.pc - 1];
+
+      if(!asmWord.file) {
+
+        const mappableAsmWord = AbstractContract.findMappableAsmWord(debugAsm, bsi.pc - 1)
+        asmWord.file = mappableAsmWord.file;
+        asmWord.line = mappableAsmWord.line;
+      }
+
+      const line =  readFileByLine(asmWord.file, asmWord.line);
+
+      error = `VerifyError: ${bsi.errstr} on contract:${contractName} line:${asmWord.line}:${line.trim()} opcode:${asmWord.opcode}\n`;
+    }
+    
+ 
 
     return {
       success: result,
-      error: si.errstr
+      error: error
     };
   }
 
@@ -121,7 +163,7 @@ export class AbstractContract {
   }
 }
 
-export function buildContractClass(desc: ContractDescription): any {
+export function buildContractClass(desc: CompileResult): any {
 
   if (!desc.contract) {
     throw new Error('missing field `contract` in description');
@@ -150,6 +192,7 @@ export function buildContractClass(desc: ContractDescription): any {
   ContractClass.abi = desc.abi;
   ContractClass.asm = desc.asm;
   ContractClass.abiCoder = new ABICoder(desc.abi, desc.structs);
+  ContractClass.debugAsm = desc.debugAsm;
 
   ContractClass.abi.forEach(entity => {
     ContractClass.prototype[entity.name] = function (...args: SupportedParamType[]): FunctionCall {
